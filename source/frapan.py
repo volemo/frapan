@@ -2,40 +2,24 @@ from matplotlib import pyplot as plt
 from scipy.optimize import curve_fit
 import tifffile as tf
 import numpy as np
+from tomllib import load
+import os
 
 
 
 ## Configure:
 
-filenames = [
-    'data/simple_frap/t00.tif', 
-    'data/simple_frap/t01.tif', 
-    'data/simple_frap/t02.tif', 
-    'data/simple_frap/t03.tif', 
-    'data/simple_frap/t04.tif', 
-    'data/simple_frap/t05.tif', 
-    'data/simple_frap/t06.tif', 
-    'data/simple_frap/t07.tif', 
-    'data/simple_frap/t08.tif', 
-    'data/simple_frap/t09.tif', 
-    'data/simple_frap/t10.tif', 
-    'data/simple_frap/t11.tif', 
-    'data/simple_frap/t12.tif', 
-    'data/simple_frap/t13.tif', 
-    'data/simple_frap/t14.tif', 
-    'data/simple_frap/t15.tif', 
-    'data/simple_frap/t16.tif', 
-    'data/simple_frap/t17.tif', 
-    'data/simple_frap/t18.tif', 
-    'data/simple_frap/t19.tif', 
-]
+path = 'data/simple_frap/'
 
-times = [
-    0.000, 0.393, 1.397, 1.790, 2.182, 2.575, 2.967, 3.360, 3.753, 4.145,
-    4.538, 4.930, 5.323, 5.715, 6.108, 6.500, 6.898, 7.285, 7.678, 8.070
-]
+config = load(open(path + 'config.toml', 'rb'))
 
-base_image_number = 3
+filenames = next(os.walk(path), (None, None, []))[2] 
+filenames = set(filenames) - set(config['exclude_files']) - set(['config.toml'])
+filenames = sorted(list(filenames))
+
+times = config['times']
+
+base_image_number = config['base_image_number']
 size = { 'px': 512, 'um': 425.1 }
 
 
@@ -44,13 +28,13 @@ size = { 'px': 512, 'um': 425.1 }
 
 images = []
 for filename in filenames:
-    images.append(tf.imread(filename)[:, :, 0])
+    images.append(tf.imread(path + filename)[:, :, 0])
 
 
     
 ## Process data:
 
-scale = size['um']/size['px']
+scale = config['size']['um']/config['size']['px']
 
 base_image = (images[0] + images[1])/2
 images = images[base_image_number:]
@@ -107,21 +91,15 @@ twin1 = twin0.twinx()
 twin2 = twin0.twinx()
 twin3 = twin0.twinx()
 
-# Offset the right spine of twin2.  The ticks and label have already been
-# placed on the right by twinx above.
 twin2.spines.right.set_position(('axes', 1.1))
 twin3.spines.right.set_position(('axes', 1.2))
 
 p0, = twin0.plot(times, parameters[:, 2], color='tab:orange', label='c')
 p1, = twin1.plot(times, parameters[:, 0], color='tab:grey', linewidth=0.5, label='a')
 p2, = twin2.plot(times, parameters[:, 1], color='tab:pink', linewidth=0.5, label='b')
-p3, = twin3.plot(times, parameters[:, 3], color='tab:brown', linewidth=0.5, label='d')
+p3, = twin3.plot(times, parameters[:, 3], color='tab:olive', linewidth=0.5, label='d')
 
 twin0.set_xlabel('Time')
-# twin0.set_ylabel('c')
-# twin1.set_ylabel('a')
-# twin2.set_ylabel('b')
-# twin2.set_ylabel('d')
 
 twin0.yaxis.label.set_color(p0.get_color())
 twin1.yaxis.label.set_color(p1.get_color())
@@ -142,8 +120,47 @@ for tick in twin3.get_yticklabels():
     tick.set_verticalalignment('center')
 
 
-
 twin0.legend(handles=[p0, p1, p2, p3])
 
 plt.savefig(f'result/parameters.png', dpi=300)
+plt.cla()
 
+# Plot approximation errors over time
+fig, twin0 = plt.subplots()
+fig.subplots_adjust(right=0.75)
+
+twin1 = twin0.twinx()
+twin2 = twin0.twinx()
+twin3 = twin0.twinx()
+
+twin2.spines.right.set_position(('axes', 1.1))
+twin3.spines.right.set_position(('axes', 1.2))
+
+p0, = twin0.plot(times, errors[:, 2], color='tab:orange', label='c')
+p1, = twin1.plot(times, errors[:, 0], color='tab:grey', linewidth=0.5, label='a')
+p2, = twin2.plot(times, errors[:, 1], color='tab:pink', linewidth=0.5, label='b')
+p3, = twin3.plot(times, errors[:, 3], color='tab:olive', linewidth=0.5, label='d')
+
+twin0.set_xlabel('Time')
+
+twin0.yaxis.label.set_color(p0.get_color())
+twin1.yaxis.label.set_color(p1.get_color())
+twin2.yaxis.label.set_color(p2.get_color())
+twin3.yaxis.label.set_color(p3.get_color())
+
+tkw = dict(size=4, width=1.5)
+twin0.tick_params(axis='x', **tkw)
+twin0.tick_params(axis='y', colors=p0.get_color(), **tkw)
+twin1.tick_params(axis='y', colors=p1.get_color(), labelrotation=90, **tkw)
+for tick in twin1.get_yticklabels():
+    tick.set_verticalalignment('center')
+    twin2.tick_params(axis='y', colors=p2.get_color(), labelrotation=90, **tkw)
+for tick in twin2.get_yticklabels():
+    tick.set_verticalalignment('center')
+    twin3.tick_params(axis='y', colors=p3.get_color(), labelrotation=90, **tkw)
+for tick in twin3.get_yticklabels():
+    tick.set_verticalalignment('center')
+
+twin0.legend(handles=[p0, p1, p2, p3])
+
+plt.savefig(f'result/errors.png', dpi=300)
