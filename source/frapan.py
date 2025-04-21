@@ -1,166 +1,201 @@
 from matplotlib import pyplot as plt
 from scipy.optimize import curve_fit
+from mergedeep import merge
+from tomllib import load
+from pprint import pp
 import tifffile as tf
 import numpy as np
-from tomllib import load
 import os
 
+class Frapan:
+    # WARNING: This implementation assumes profile size is constant across the series.
 
-
-## Configure:
-
-path = 'data/simple_frap/'
-
-config = load(open(path + 'config.toml', 'rb'))
-
-filenames = next(os.walk(path), (None, None, []))[2] 
-filenames = set(filenames) - set(config['exclude_files']) - set(['config.toml'])
-filenames = sorted(list(filenames))
-
-times = config['times']
-
-base_image_number = config['base_image_number']
-size = { 'px': 512, 'um': 425.1 }
-
-
-
-## Load files:
-
-images = []
-for filename in filenames:
-    images.append(tf.imread(path + filename)[:, :, 0])
-
-
+    default_config = {
+        'results_directory': 'results/',
+        'temporary_directory': 'temporary',
+        'approximation': {
+            'func': 'gaussian',
+            'guess': [-0.05, 200, 44, 1.04]
+        }
+    }
     
-## Process data:
+    def __init__(self, path, adhoc_config={}):
+        file_config = load(open(path + 'config.toml', 'rb'))
+        self.config = merge({}, self.default_config, file_config, adhoc_config)
 
-scale = config['size']['um']/config['size']['px']
+        filenames = next(os.walk(path), (None, None, []))[2] 
+        filenames = set(filenames) - set(self.config['exclude_files']) - set(['config.toml'])
+        self.filenames = sorted(list(filenames))
 
-base_image = (images[0] + images[1])/2
-images = images[base_image_number:]
-times = times[base_image_number:]
-N = len(images)
+        self.images = []
+        for filename in filenames:
+            self.images.append(tf.imread(path + filename)[:, :, 0])
 
-# Normalise:
-images = [ image / base_image for image in images ]
+        self.expand_config()
+            
+        self.bi_num = self.config['base_images_number']
+        self.shape = (self.config['size']['px']['width'], self.config['size']['px']['height'])
+        self.rslt_dir = self.config['results_directory']
+        self.tmp_dir = self.config['temporary_directory']
 
-# Calculate mean profile for every image:
-mean_intensity = np.zeros((base_image.shape[0], N))
-for i in range(N):
-    mean_intensity[:, i] = np.sum(images[i], axis=1) / images[i].shape[0]
+        pp(self.config)
+        
 
-# Fit a Gaussian to every profile:
-def f(x, a, b, c, d):
-    return a * np.exp(-(x-b)**2/(2*c**2)) + d
+    def expand_config(self):
+        real_size = self.config['size']['um']['height']
+        pixel_size = self.config['size']['px']['height']
+        # TODO: Check which properties are set (i.e. is size.scale set? is size.px set? etc).
+        self.config['size']['scale'] = real_size / pixel_size 
 
-parameters = np.zeros((N, 4))
-errors = np.zeros((N, 4))
+        
+    def normalise_images(self):
+        # TODO: Average across bi_num images.
+        self.base_image = (self.images[0] + self.images[1])/2 
+        self.images = self.images[self.bi_num : ]
 
-xs = np.arange(base_image.shape[0])
-for i in range(N):
-    guess = [-0.05, xs[xs.shape[0] // 2], 44, 1.04]
-    popt, pcov = curve_fit(f, xs, mean_intensity[:, i], p0=guess)
-    parameters[i, :] = popt
-    errors[i, :] = np.sqrt(np.diag(pcov))
+        self.config['times'] = self.config['times'][self.bi_num:]
 
-    
+        self.images = [ image / self.base_image for image in self.images ]
 
-## Postprocess results:
+        pp(self.config)
 
-# Save mean series:
-mean_intensity_image = np.stack((mean_intensity, mean_intensity, mean_intensity), axis=-1)
-tf.imwrite('result/mean-intensity.tif', mean_intensity_image, photometric='rgb')
+        
+    def compute_mean_profiles(self):
+        N = len(self.images)
+        self.mean_profiles = np.zeros((self.shape[0], N))
+        for i in range(N):
+            self.mean_profiles[:, i] = np.sum(self.images[i], axis=1) / self.shape[0] 
+            
 
-# Plot mean profiles with approximations:
-xs = np.arange(base_image.shape[0]) * scale
-for i in range(N):
-    ys = f(xs, *(parameters[i, :]))
-    plt.plot(xs, mean_intensity[:, i], label='Measured')
-    plt.plot(xs, ys, label='Approximation')
-    plt.xlabel('Coordinate, um')
-    plt.ylabel('Intensity, a.u.')
-    plt.legend()
-    plt.savefig(f'result/profile-{i}.png', dpi=300)
-    plt.cla()
+    funcs = {
+        'gaussian': lambda x, a, b, c, d: a * np.exp(-(x-b)**2/(2*c**2)) + d,
+    }
 
-# Plot approximation parameters over time:
-fig, twin0 = plt.subplots()
-fig.subplots_adjust(right=0.75)
+    def approximate(self, func=None):
+        N = len(self.images)
+        self.func = func if func else self.funcs[self.config['approximation']['func']]
+        par_num = 4 # TODO: extract number of parameters from the function
+        self.parameters = np.zeros((N, par_num))
+        self.errors = np.zeros((N, par_num))
 
-twin1 = twin0.twinx()
-twin2 = twin0.twinx()
-twin3 = twin0.twinx()
-
-twin2.spines.right.set_position(('axes', 1.1))
-twin3.spines.right.set_position(('axes', 1.2))
-
-p0, = twin0.plot(times, parameters[:, 2], color='tab:orange', label='c')
-p1, = twin1.plot(times, parameters[:, 0], color='tab:grey', linewidth=0.5, label='a')
-p2, = twin2.plot(times, parameters[:, 1], color='tab:pink', linewidth=0.5, label='b')
-p3, = twin3.plot(times, parameters[:, 3], color='tab:olive', linewidth=0.5, label='d')
-
-twin0.set_xlabel('Time')
-
-twin0.yaxis.label.set_color(p0.get_color())
-twin1.yaxis.label.set_color(p1.get_color())
-twin2.yaxis.label.set_color(p2.get_color())
-twin3.yaxis.label.set_color(p3.get_color())
-
-tkw = dict(size=4, width=1.5)
-twin0.tick_params(axis='x', **tkw)
-twin0.tick_params(axis='y', colors=p0.get_color(), **tkw)
-twin1.tick_params(axis='y', colors=p1.get_color(), labelrotation=90, **tkw)
-for tick in twin1.get_yticklabels():
-    tick.set_verticalalignment('center')
-    twin2.tick_params(axis='y', colors=p2.get_color(), labelrotation=90, **tkw)
-for tick in twin2.get_yticklabels():
-    tick.set_verticalalignment('center')
-    twin3.tick_params(axis='y', colors=p3.get_color(), labelrotation=90, **tkw)
-for tick in twin3.get_yticklabels():
-    tick.set_verticalalignment('center')
+        xs = np.arange(self.shape[0])
+        for i in range(N):
+            try:
+                guess = self.config['approximation']['guess']
+                popt, pcov = curve_fit(self.func, xs, self.mean_profiles[:, i], p0=guess)
+                self.parameters[i, :] = popt
+                self.errors[i, :] = np.sqrt(np.diag(pcov))
+            except OptimizeWarning:
+                print('Warning: Approximation: For image ' + str(i) + 'covariance of the ' + \
+                      'parameters could not be estimated. (This mean the approximation is ' + \
+                      'probably out of wack.')
 
 
-twin0.legend(handles=[p0, p1, p2, p3])
+    def save_mean_profiles(self):
+        mp_image = self.mean_profiles
+        mp_image = np.stack((mp_image, mp_image, mp_image), axis=-1)
+        path = self.rslt_dir + 'mean-profiles.tif'
+        tf.imwrite(path, mp_image, photometric='rgb')
 
-plt.savefig(f'result/parameters.png', dpi=300)
-plt.cla()
 
-# Plot approximation errors over time
-fig, twin0 = plt.subplots()
-fig.subplots_adjust(right=0.75)
+    def plot_mean_profiles_with_approximations(self):
+        N = len(self.images)
+        xs = np.arange(self.shape[0]) * self.config['size']['scale']
+        for i in range(N):
+            ys = self.func(xs, *(self.parameters[i, :]))
+            plt.plot(xs, self.mean_profiles[:, i], label='Measured')
+            plt.plot(xs, ys, label='Approximation')
+            plt.xlabel('Coordinate, um')
+            plt.ylabel('Intensity, a.u.')
+            plt.legend()
+            plt.savefig(self.rslt_dir + f'profile-{i + self.bi_num}.png', dpi=300)
+            plt.close()
 
-twin1 = twin0.twinx()
-twin2 = twin0.twinx()
-twin3 = twin0.twinx()
 
-twin2.spines.right.set_position(('axes', 1.1))
-twin3.spines.right.set_position(('axes', 1.2))
+    def plot_approximation_parameters_over_time(self):
+        fig, twin0 = plt.subplots()
+        fig.subplots_adjust(right=0.75)
 
-p0, = twin0.plot(times, errors[:, 2], color='tab:orange', label='c')
-p1, = twin1.plot(times, errors[:, 0], color='tab:grey', linewidth=0.5, label='a')
-p2, = twin2.plot(times, errors[:, 1], color='tab:pink', linewidth=0.5, label='b')
-p3, = twin3.plot(times, errors[:, 3], color='tab:olive', linewidth=0.5, label='d')
+        twin1 = twin0.twinx()
+        twin2 = twin0.twinx()
+        twin3 = twin0.twinx()
 
-twin0.set_xlabel('Time')
+        twin2.spines.right.set_position(('axes', 1.1))
+        twin3.spines.right.set_position(('axes', 1.2))
 
-twin0.yaxis.label.set_color(p0.get_color())
-twin1.yaxis.label.set_color(p1.get_color())
-twin2.yaxis.label.set_color(p2.get_color())
-twin3.yaxis.label.set_color(p3.get_color())
+        ts = self.config['times']
+        ps = self.parameters 
+        p0, = twin0.plot(ts, ps[:, 2], color='tab:orange', label='c')
+        p1, = twin1.plot(ts, ps[:, 0], color='tab:grey', linewidth=0.5, label='a')
+        p2, = twin2.plot(ts, ps[:, 1], color='tab:pink', linewidth=0.5, label='b')
+        p3, = twin3.plot(ts, ps[:, 3], color='tab:olive', linewidth=0.5, label='d')
 
-tkw = dict(size=4, width=1.5)
-twin0.tick_params(axis='x', **tkw)
-twin0.tick_params(axis='y', colors=p0.get_color(), **tkw)
-twin1.tick_params(axis='y', colors=p1.get_color(), labelrotation=90, **tkw)
-for tick in twin1.get_yticklabels():
-    tick.set_verticalalignment('center')
-    twin2.tick_params(axis='y', colors=p2.get_color(), labelrotation=90, **tkw)
-for tick in twin2.get_yticklabels():
-    tick.set_verticalalignment('center')
-    twin3.tick_params(axis='y', colors=p3.get_color(), labelrotation=90, **tkw)
-for tick in twin3.get_yticklabels():
-    tick.set_verticalalignment('center')
+        twin0.set_xlabel('Time')
 
-twin0.legend(handles=[p0, p1, p2, p3])
+        twin0.yaxis.label.set_color(p0.get_color())
+        twin1.yaxis.label.set_color(p1.get_color())
+        twin2.yaxis.label.set_color(p2.get_color())
+        twin3.yaxis.label.set_color(p3.get_color())
 
-plt.savefig(f'result/errors.png', dpi=300)
+        tkw = dict(size=4, width=1.5)
+        twin0.tick_params(axis='x', **tkw)
+        twin0.tick_params(axis='y', colors=p0.get_color(), **tkw)
+        twin1.tick_params(axis='y', colors=p1.get_color(), labelrotation=90, **tkw)
+        for tick in twin1.get_yticklabels():
+            tick.set_verticalalignment('center')
+        twin2.tick_params(axis='y', colors=p2.get_color(), labelrotation=90, **tkw)
+        for tick in twin2.get_yticklabels():
+            tick.set_verticalalignment('center')
+        twin3.tick_params(axis='y', colors=p3.get_color(), labelrotation=90, **tkw)
+        for tick in twin3.get_yticklabels():
+            tick.set_verticalalignment('center')
+
+
+        twin0.legend(handles=[p0, p1, p2, p3])
+
+        plt.savefig(self.rslt_dir + f'parameters.png', dpi=300)
+        plt.close()
+
+
+    def plot_approximation_errors_over_time(self):
+        fig, twin0 = plt.subplots()
+        fig.subplots_adjust(right=0.75)
+
+        twin1 = twin0.twinx()
+        twin2 = twin0.twinx()
+        twin3 = twin0.twinx()
+
+        twin2.spines.right.set_position(('axes', 1.1))
+        twin3.spines.right.set_position(('axes', 1.2))
+
+        ts = self.config['times']
+        es = self.errors
+        p0, = twin0.plot(ts, es[:, 2], color='tab:orange', label='c')
+        p1, = twin1.plot(ts, es[:, 0], color='tab:grey', linewidth=0.5, label='a')
+        p2, = twin2.plot(ts, es[:, 1], color='tab:pink', linewidth=0.5, label='b')
+        p3, = twin3.plot(ts, es[:, 3], color='tab:olive', linewidth=0.5, label='d')
+
+        twin0.set_xlabel('Time')
+
+        twin0.yaxis.label.set_color(p0.get_color())
+        twin1.yaxis.label.set_color(p1.get_color())
+        twin2.yaxis.label.set_color(p2.get_color())
+        twin3.yaxis.label.set_color(p3.get_color())
+
+        tkw = dict(size=4, width=1.5)
+        twin0.tick_params(axis='x', **tkw)
+        twin0.tick_params(axis='y', colors=p0.get_color(), **tkw)
+        twin1.tick_params(axis='y', colors=p1.get_color(), labelrotation=90, **tkw)
+        for tick in twin1.get_yticklabels():
+            tick.set_verticalalignment('center')
+            twin2.tick_params(axis='y', colors=p2.get_color(), labelrotation=90, **tkw)
+        for tick in twin2.get_yticklabels():
+            tick.set_verticalalignment('center')
+            twin3.tick_params(axis='y', colors=p3.get_color(), labelrotation=90, **tkw)
+        for tick in twin3.get_yticklabels():
+            tick.set_verticalalignment('center')
+
+        twin0.legend(handles=[p0, p1, p2, p3])
+
+        plt.savefig(self.rslt_dir + f'errors.png', dpi=300)
+        plt.close()
