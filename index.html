@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>frapan</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.6.2/core.css">
+    <script type="module" src="https://pyscript.net/releases/2024.6.2/core.js"></script>
+</head>
+<body>
+    <input type="file" id="fileRead">
+
+    <button id="save">Grab and save</button> 
+    <button id="read">read</button> 
+    <button id="local">save locally</button> 
+
+    <script type="mpy" src="./source/web.py" config="./pyproject.toml" terminal async></script>
+</body>
+</html>

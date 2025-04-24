@@ -42,7 +42,7 @@ class Frapan:
         self.rslt_dir = self.config['results_directory']
         self.tmp_dir = self.config['temporary_directory']
 
-
+        
     def expand_config(self):
         real_size = self.config['size']['um']['height']
         pixel_size = self.config['size']['px']['height']

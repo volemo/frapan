@@ -1,0 +1,4 @@
+name = "frapan"
+
+[js_modules.main]
+"./file_io.js" = "file_io"
