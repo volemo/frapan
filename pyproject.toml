@@ -1,0 +1,5 @@
+name = "frapan"
+packages = ["matplotlib", "numpy", "scipy", "mergedeep", "tifffile"]
+
+[js_modules.main]
+"./file_io.js" = "file_io"

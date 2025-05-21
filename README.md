@@ -1,6 +1,1 @@
-# TODO:
-- Fix approximation (the fitted function is shifted laterally for some reason)
-- Add dumping funtionality
-- Write an extensive documentation
-- Add masking step to the preprocessing pipeline
-- Add mask creating utility
+A tool for analysing image series for FRAP method of determining the diffusion kinetics in a sample.
