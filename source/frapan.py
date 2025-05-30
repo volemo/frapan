@@ -13,17 +13,18 @@ import os
 
 class Frapan:
     # ==== Initialisation and configuration ====
-    
+
     # WARNING: This implementation assumes profile size is constant across the series.
 
     default_config = {
+        'exclude_files': ['.DS_Store'],
         'results_directory': 'results/',
         'temporary_directory': 'temporary/',
         'approximation': {
             'func': 'gaussian',
         }
     }
-    
+
     def __init__(self, path, adhoc_config={}):
         # Construct config:
         path += '/' if path[-1] != '/' else ''
@@ -31,7 +32,7 @@ class Frapan:
         self.config = merge({}, self.default_config, file_config, adhoc_config)
 
         # Get a list of filenames of the images in the series:
-        filenames = next(os.walk(path), (None, None, []))[2] 
+        filenames = next(os.walk(path), (None, None, []))[2]
         filenames = set(filenames) - set(self.config['exclude_files']) - set(['config.toml'])
         self.filenames = sorted(list(filenames))
         print(self.filenames)
@@ -49,31 +50,35 @@ class Frapan:
         real_size = self.config['size']['um']['height']
         pixel_size = self.config['size']['px']['height']
         # TODO: Check which properties are set (i.e. is size.scale set? is size.px set? etc).
-        self.config['size']['scale'] = real_size / pixel_size 
+        self.config['size']['scale'] = real_size / pixel_size
 
 
     # ==== Normalisation ====
-    
+
     def calculate_base(self):
         bi_num = self.config['base_images_number']
 
         # Use first bi_num images to calculate base image:
         # TODO: Different ways to calculate base image.
-        self.base_image = sum(self.images[ : bi_num]) / bi_num 
+        self.base_image = sum(self.images[ : bi_num]) / bi_num
 
-        # Remove bi_num images from the series: 
+        # Remove bi_num images from the series:
         self.images = self.images[bi_num : ]
         self.config['times'] = self.config['times'][bi_num : ]
 
 
     def divide_by_base(self):
-        self.images = [ image / self.base_image for image in self.images ]
+        # HACK: Irradicates zeros from the base image to prevent division by zero.
+        bi = self.base_image
+        bi[bi == 0] = 1e-5
 
-        
+        self.images = [ image / bi for image in self.images ]
+
+
     def subtract_base(self):
         bi_num = self.config['base_images_number']
-        
-        self.base_image = sum(self.images[ : bi_num]) / bi_num 
+
+        self.base_image = sum(self.images[ : bi_num]) / bi_num
         self.images = self.images[bi_num : ]
 
         self.config['times'] = self.config['times'][bi_num : ]
@@ -84,22 +89,22 @@ class Frapan:
     def normalise_images(self):
         self.calculate_base()
         self.divide_by_base()
-        
-        
+
+
     def compute_mean_profiles(self):
         shape = (self.config['size']['px']['width'], self.config['size']['px']['height'])
         N = len(self.images)
         self.mean_profiles = np.zeros((shape[0], N))
         for i in range(N):
-            self.mean_profiles[:, i] = np.sum(self.images[i], axis=1) / shape[0] 
-            
+            self.mean_profiles[:, i] = np.sum(self.images[i], axis=1) / shape[0]
+
 
     def smooth_out(self):
         N = len(self.mean_profiles[0, :])
-        w = len(self.mean_profiles[:, 0]) // 25 
+        w = len(self.mean_profiles[:, 0]) // 25
         profiles = np.zeros((len(self.mean_profiles[:, 0]) - w + 1, N))
         for i in range(N):
-            profiles[:, i] = np.convolve(self.mean_profiles[:, i], np.ones(w), 'valid') / w 
+            profiles[:, i] = np.convolve(self.mean_profiles[:, i], np.ones(w), 'valid') / w
 
             for j in range(w//2):
                 self.mean_profiles[j, i] = profiles[0, i]
@@ -110,34 +115,34 @@ class Frapan:
 
 
     # ==== Approximation ====
-                
+
     def gaussian_distribution(x, a, b, c, d):
         return a * np.exp(-(x-b)**2/(2*c**2)) + d
 
-    
+
     def double_gaussian_distribution(x, a1, a2, b1, b2, c1, c2, d):
-       g1 = gaussian_distribution(x, a1, b1, c1, 0) 
-       g2 = gaussian_distribution(x, a2, b2, c2, 0) 
-       return g1 + g2 + d 
-    
-   
+       g1 = gaussian_distribution(x, a1, b1, c1, 0)
+       g2 = gaussian_distribution(x, a2, b2, c2, 0)
+       return g1 + g2 + d
+
+
     funcs = {
         'gaussian': gaussian_distribution,
         'double_gaussian': double_gaussian_distribution,
     }
 
-    
+
     def guess_gaussian_parameters(self, ys, i):
         tmp_dir = self.config['temporary_directory']
         plt.plot(ys)
-        w = len(ys) // 25 
+        w = len(ys) // 25
         ys = np.convolve(ys, np.ones(w), 'valid') / w
         plt.plot(ys)
         plt.savefig(tmp_dir + f'guessing-{i}.png', dpi=300)
         plt.close()
         return [-0.05, ys.shape[0] // 2, 44, 1.04]
-        
-    
+
+
     def approximate(self, func=None):
         shape = (self.config['size']['px']['width'], self.config['size']['px']['height'])
         N = len(self.images)
@@ -155,7 +160,7 @@ class Frapan:
                     # NB! This is a guess for the parameters of a *gaussian*.
                     guess = self.guess_gaussian_parameters(self.mean_profiles[:, i], i)
                 else:
-                    guess = self.config['approximation']['guess'] 
+                    guess = self.config['approximation']['guess']
 
                 popt, pcov = curve_fit(self.func, xs, self.mean_profiles[:, i], p0=guess)
                 self.parameters[i, :] = popt
@@ -167,9 +172,9 @@ class Frapan:
             except RuntimeError:
                 print(f'Error: Approximation: Could not find optimal parameters for image {i}.')
 
-                
+
     # ==== Export ====
-                
+
     def save_mean_profiles(self):
         rslt_dir = self.config['results_directory']
         mp_image = self.mean_profiles
@@ -191,13 +196,14 @@ class Frapan:
             plt.legend()
             plt.savefig(rslt_dir + f'profile-{i + bi_num}.png', dpi=300)
             plt.close()
-                
+
 
     def plot_mean_profiles_with_approximations(self):
+        shape = (self.config['size']['px']['width'], self.config['size']['px']['height'])
         rslt_dir = self.config['results_directory']
         bi_num = self.config['base_images_number']
         N = len(self.images)
-        xs = np.arange(self.shape[0]) * self.config['size']['scale']
+        xs = np.arange(shape[0]) * self.config['size']['scale']
         for i in range(N):
             ys = self.func(xs, *(self.parameters[i, :]))
             plt.plot(xs, self.mean_profiles[:, i], label='Measured')
@@ -222,7 +228,7 @@ class Frapan:
         twin3.spines.right.set_position(('axes', 1.2))
 
         ts = self.config['times']
-        ps = self.parameters 
+        ps = self.parameters
         p0, = twin0.plot(ts, ps[:, 2], color='tab:orange', label='c')
         p1, = twin1.plot(ts, ps[:, 0], color='tab:grey', linewidth=0.5, label='a')
         p2, = twin2.plot(ts, ps[:, 1], color='tab:pink', linewidth=0.5, label='b')
@@ -305,13 +311,12 @@ if __name__ == '__main__':
     frapan = Frapan(sys.argv[-1])
 
     frapan.normalise_images()
-    # frapan.normalise_by_subtracting()
     frapan.compute_mean_profiles()
-    frapan.smooth_out()
+    # frapan.smooth_out()
     frapan.approximate()
 
-    frapan.save_mean_profiles()
+    # frapan.save_mean_profiles()
     # frapan.plot_mean_profiles()
     frapan.plot_mean_profiles_with_approximations()
-    # frapan.plot_approximation_parameters_over_time()
+    frapan.plot_approximation_parameters_over_time()
     # frapan.plot_approximation_errors_over_time()
